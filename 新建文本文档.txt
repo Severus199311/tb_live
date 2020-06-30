@@ -1,0 +1,95 @@
+taobao_live1：忘记了
+taobao_live2：忘记了
+taobao_live5：第一个真正成型的
+taobao_live4：在5的基础上优化的
+taobao_live3：在4的版本上优化的，将模块一与模块二合并
+taobao_live6：尝试爬取淘宝直播app端的，基于3版本（get_lives_and_items_2是全部用insert语句而不用update）
+taobao_live7：尝试用redis+MySQL的
+taobao_live8：在7的基础上改良的。但目前尚在测试中。
+taobao_live9：在8的基础上，通过user_id获取live_detail的。get_finished_lives模块，log和报警未写完。
+taobao_live10：在9的基础上，尝试将店铺单独获取的，由于店铺可以单独获取，get_ongoing_lives和get_finished_lives合并为get_lives_and_items模块了。部署时需要改：任务分配和调度；开发库改成生产库（mysql，redis）；live_info补齐；[:1000]去掉；logger模块中地址改掉；报警装置；解除redis中item键数量的限制。
+taobao_live11：发现buy_count不是商品实时销量后，不得不将每一个item_id都去请求一遍销量。
+taobao_live12：代码基本是11版的代码，分成了多台机器
+taobao_live13：在12的基础上加了报警和任务分配和先进先出（根据直播的开始时间）
+
+云手机：
+bxmind
+g#fzaDmx2bUDwKc93
+
+配置termux:
+sed -i 's@^\(deb.*stable main\)$@#\1\ndeb https://mirrors.tuna.tsinghua.edu.cn/termux/termux-packages-24 stable main@' $PREFIX/etc/apt/sources.list
+sed -i 's@^\(deb.*games stable\)$@#\1\ndeb https://mirrors.tuna.tsinghua.edu.cn/termux/game-packages-24 games stable@' $PREFIX/etc/apt/sources.list.d/game.list
+sed -i 's@^\(deb.*science stable\)$@#\1\ndeb https://mirrors.tuna.tsinghua.edu.cn/termux/science-packages-24 science stable@' $PREFIX/etc/apt/sources.list.d/science.list
+apt update && apt upgrade
+pkg install python
+python -m pip install --upgrade pip
+pip install 各种库
+pip install gevent==1.4.0（gevent如果最新版装不上就装1.4.0）
+pkg install mariadb
+pip install mysqlclient
+pip install aiomysql  -i https://pypi.tuna.tsinghua.edu.cn/simple
+ps -ef | grep tb_live  | grep -v grep | awk '{print $2}' | xargs kill -9
+ls -atl
+chown u0_a48:u0_a48 -R *
+chomod u0_a48:u0_a48 -R *
+
+time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())
+
+dolphin scheduler：
+47.114.166.130:50122/view/login/index.html
+# etl/elt_dev23490
+
+C:\Users\百芯科技\AppData\Roaming\Python\Python37\Scripts
+
+报警和调度：
+1，做法：
+     a. 各个模块根据redis的workers键中的机器数量（存活的机器数量）得到一个badge，并据此获取自己的任务
+     b. 各个模块将重要错误以代号形式写入redis的errors键。写入之前，确认errors中是否已有该代号的错误，如有，则不写入（重复写入会导致重复报警）
+     c. monitor.py每半小时跑一次，检查errors键中哪台机器因为什么错误而挂掉了，删除挂掉机器在works键中的记录（表面这台机器已经挂掉），报警，并将errors键中该错误状态修改为已报警（不修改状态会导致重复报警）
+2，redis键：
+     a. errors键使用有序集合，value是时间戳，score是错误类型+错误状态+模块+机器
+     b. worker键使用集合
+3，代号：
+     a. 错误类型：1对应被封，2对应请求连接多次失败，3对应mysql连接多次失败，4对应redis连接多次失败，5对应redis数据溢出（可能是云手机挂掉或真的数据量过大），6对应缺少脚本
+     b. 错误状态：1对应未报警，0对应已报警
+     c. 模块：0不对应任一特定模块（专门用于报第5类错误），1对应get_raw_data，2对应get_new_users，3对应check_users，4对应get_lives，5对应get_items，6对应mysql_client
+     d. 机器：00不对应任一特定模块（专门用于报第5类错误），01对应MT001，02对应MT002，。。。
+     例如：20305表示，错误类型是“请求连接多次失败”，错误状态为“已报警”，发生错误的模块时“check_users.py”，发生错误的机器是MT005
+4，每次处理完报警之后都要把redis的workers表补齐，把errors表清空。
+
+可能的进一步优化：
+1. 20个一批入库：现在20个一批爬取，每批结束后缺少time.sleep(0.5)的话会被拦截。如果20个一批爬取之后马上入库，入库用的时间就相当于sleep。好处是省下了sleep的时间，又可以及时入库。
+2. 消息队列：任何一台机器，一旦发现redis中没有items_temp这个键，就从items键中获取所有值（items键是有序集合，得到的list是排好序的），一次放入items_temp（因为是依次，也是排好序的），然后所有机器都从items_temp中去获取，每次10000个，达到了先进先出的目的，并且成功入库之后再去items键删记录。这样的消息队列比按照机器编号爬取更有效率，因为一台机器空下来后可以去帮助其他机器。（问题在于，机器从items获取值添加到items_temp需要少量时间，这段时间内可能会有另一台机器做同样的事，导致items_temp中数据重复。去重后添加？或者爬取前去重？）但是要用哪种表呢？list无法查询元素是否存在，set不能先进先出。
+3.xposed的log要除去
+4.商品100个以上的直播去除
+5.现在时间减去开始时间大于10小时的不要
+
+抓包：
+小米Charles：uc浏览器和淘宝能访问，抓不到包，443。自带浏览器和淘宝直播不能访问。
+苹果Charles：能访问，抓不到包，包没有出现。
+小米fiddler：uc浏览器和淘宝能访问，抓不到包，443。自带浏览器和淘宝直播不能访问。
+苹果fiddler：能访问，抓不到包，包没有出现。
+小米packet capture：淘宝能访问，抓不到关键包，淘宝直播不能访问。
+小米mitmdump：uc浏览器和淘宝能访问，抓不到包，443。自带浏览器和淘宝直播不能访问。
+苹果mitmdump：能访问，抓不到关键包。
+
+安卓端配置frida：
+adb push C:\Users\百芯科技\scraping\douyin2\frida-server-12.8.20-android-x86 /data/local/tmp/frida-server
+adb forward tcp:27042 tcp:27042 
+adb shell
+su
+cd data
+cd ./local
+cd ./tmp
+chmod 777 frida-server
+./frida-server
+
+连接frida：
+adb devices
+adb connect
+adb forward tcp:27042 tcp:27042 
+adb shell
+cd data
+cd ./local
+cd ./tmp
+./frida-server
